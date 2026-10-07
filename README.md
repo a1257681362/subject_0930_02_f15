@@ -215,3 +215,18 @@
 - 全程留证：主数据登记/规则版本停用、建单/拆子单/再拆、改点提交/批准/驳回、入库、逐箱交接/冻结、签收、订单完成、外部同步成功/失败均写 `t_fulfill_change_evidence`（含操作者、前后 JSON 快照、幂等请求号；同步失败独立事务留证），可经 `GET /api/aqua/fulfill/evidence` 按对象或 requestId 追溯。
 
 验收：`mvn test -Dtest=FulfillmentAcceptanceTest`，16 个检查点（CP0–CP15）逐段输出报告，失败即停并给出停点；覆盖金额口径三处守恒、入库三要素与称重拦截、超差冻结与冷库账实闭环、首签回执、客户视图字段白名单、网关 DOWN 不假装成功与恢复不重复通知。
+
+## 养殖人员资质与岗位授权（aqua-15）
+
+模块包路径 `com.evops.aqua.qual`，打通：四岗位可操作范围配置 → 人员登记 → 证书门控权限 → 临时授权（结束时间+审批单）→ 到期前提醒 / 过期立即收回 → 岗位变更保留历史 → 批量冻结列影响清单 → 列表/详情/导出/日志交叉核对，全程留证。
+
+- 岗位可操作范围（`GET /api/aqua/qual/roles`，`PUT /api/aqua/qual/roles/{role}/scope`）：兽医（VET）/采样员（SAMPLER）/捕捞员（FISHER）/设备员（EQUIPMENT_OPERATOR）各自配置菜单（`menu:*`）与接口（`api:*`，支持 `/**` 前缀匹配）权限码与上岗必需证书类型；调整留证，非法岗位与非法权限码拒绝。
+- 人员登记（`POST /api/aqua/qual/persons`，requestId 幂等）：编号唯一，岗位必须在册。
+- 证书（`POST /api/aqua/qual/certificates`，requestId 幂等）：证书号全局唯一；**权限按当前时间实时判定——证书过期当刻对应菜单与接口权限即收回**（`POST /api/aqua/qual/access/check` 可核验，拒绝时说明收回原因），不等待扫描；扫描（Quartz 每日，`POST /api/aqua/qual/scan` 手工触发同逻辑）把过期证书置 EXPIRED 留证；`POST /certificates/{id}/revoke` 吊销须登记操作者与原因。
+- 到期前提醒：扫描对到期日落在 [今天, 今天+提醒天数]（`aqua.qual.remind-days`，默认 30）的有效证书逐证逐日生成提醒，**uk(证书, 提醒日期) 保证重扫/重启不重复**；`GET /api/aqua/qual/reminders` 查询。
+- 临时授权（`POST /api/aqua/qual/temp-auths`，requestId 幂等）：**必须带结束时间与审批单号**，缺任一拒绝；仅在 [effectiveFrom, effectiveTo) 内生效，**到点自动失效（实时判定）**，扫描补置 EXPIRED 留证；冻结/离职人员不可授予。
+- 岗位变更（`POST /persons/{id}/role-change`，requestId 幂等）：只追加 `t_qual_role_change` 历史行并切换当前岗位，权限按新岗位即时重算；**历史证书、临时授权、变更证据一律保留不删**（详情 `GET /persons/{id}` 可见全部历史）。
+- 批量冻结（`POST /persons/batch-freeze`，requestId 幂等）：逐人返回冻结结果（FROZEN/ALREADY_FROZEN/NOT_FOUND）并**列出受影响工单（保养工单未关闭，经维修工号=人员编号关联）与未完成任务（疫病复查待处理）**，影响快照落 `t_qual_freeze_line` 留档；冻结即收回全部权限；重放返回首次批次不重复冻结。`POST /persons/{id}/unfreeze` 解冻恢复。
+- 交叉核对同一行源：列表（`GET /persons`）、详情（`GET /persons/{id}`）、CSV 导出（`GET /persons/export`）共用同一 `loadRows` 查询与过滤口径，人员状态/证书统计三个出口一致；日志（`GET /api/aqua/qual/evidence`）按对象或 requestId 追溯全部写操作。
+
+验收：`mvn test -Dtest=PersonnelQualificationAcceptanceTest`，12 个检查点（CP0–CP11）逐段输出报告，失败即停并给出停点。

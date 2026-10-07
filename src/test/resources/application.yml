@@ -40,6 +40,9 @@ aqua:
     outbox-scan-cron: "0 0 0 1 1 ? 2099"
     gateway:
       mode: sim
+  qual:
+    # 验收中手工 POST /api/aqua/qual/scan 驱动扫描，定时不真实触发
+    scan-cron: "0 0 0 1 1 ? 2099"
 
 logging:
   level:
