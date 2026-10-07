@@ -215,3 +215,18 @@
 - 全程留证：主数据登记/规则版本停用、建单/拆子单/再拆、改点提交/批准/驳回、入库、逐箱交接/冻结、签收、订单完成、外部同步成功/失败均写 `t_fulfill_change_evidence`（含操作者、前后 JSON 快照、幂等请求号；同步失败独立事务留证），可经 `GET /api/aqua/fulfill/evidence` 按对象或 requestId 追溯。
 
 验收：`mvn test -Dtest=FulfillmentAcceptanceTest`，16 个检查点（CP0–CP15）逐段输出报告，失败即停并给出停点；覆盖金额口径三处守恒、入库三要素与称重拦截、超差冻结与冷库账实闭环、首签回执、客户视图字段白名单、网关 DOWN 不假装成功与恢复不重复通知。
+
+## 养殖人员资质与岗位授权（aqua-15）
+
+模块包路径 `com.evops.aqua.staff`，管理现场四类岗位——兽医 VET / 采样员 SAMPLER / 捕捞员 FISHER / 设备员 EQUIPMENT：人员一人一档 → 按岗配可操作范围（菜单编码 + 接口 Ant 路径）→ 持资质证书上岗（到期前提醒、过期立即收回菜单与接口）→ 临时授权必带审批单与结束时间 → 岗位变更只追加任职历史不删历史操作 → 批量冻结先列受影响工单与未完成任务再冻。有效权限由 `StaffAccessService` 唯一口径实时计算，列表、详情、CSV 导出、现场接口拦截四者同源。
+
+- 岗位可操作范围（`POST /api/aqua/staff/post-scopes`，初始化四岗各一行）：菜单编码与接口 Ant 路径逗号分隔；调整只影响**之后**授权/收权冻结的快照，历史授权快照不回改；有效权限剖面始终取岗位**当前生效**范围，改范围/调岗后列表、详情、导出、实时拦截即时同口径。
+- 资质证书（`POST /api/aqua/staff/certificates`，requestId 幂等；`POST /certificates/{id}/revoke`）：一证一岗、到期日必填；首次发有效证自动按岗授权（任职行冻结当时菜单/接口快照）；换证只追加新证，旧证保留可追溯。**到期前**进入提醒窗口（默认 30 天，可按证配置）由 Quartz 扫描生成提醒，`t_staff_cert_reminder` 每证每日一条（uk 证书+提醒日），重扫不重复发；**过期当日**扫描把证书置 EXPIRED 并写收权台账。
+- **过期即收回，双保险**：实时判定不依赖扫描——现场 App 带 `X-Staff-No` 访问受管接口时 `StaffAccessFilter` 按唯一口径裁决，人员冻结/离场、证书已过期、临时授权已过结束时间或不在岗位接口 Ant 范围内一律 **403 立即收回接口权限**；管理面（会话、不带现场头）与 `/api/aqua/staff/**` 不受影响。定时扫描负责台账状态、`t_staff_permission_revoke` 收权记录与证据。也可经 `GET /api/aqua/staff/access-check?uri=...` 主动判定。
+- 临时授权（`POST /api/aqua/staff/temp-grants`）：**审批单号与结束时间缺一不可**（无单/无结束时间/结束不晚于开始一律拒绝，审批单号全局唯一）；按 `[startTime,endTime)` 生效，到期扫描置 EXPIRED 收权，可 `POST /temp-grants/{id}/revoke` 提前撤销（必登记原因）。
+- 岗位变更（`POST /api/aqua/staff/post-changes`）：目标岗位必须持**有效资质证书**，否则拒绝；旧在任授权一律置 SUPERSEDED **只追加不删除**，逐岗写 POST_CHANGE 收权台账，历史单据/证据/在办任务原样保留。人员离场（`POST /personnel/{staffNo}/leave`）收全部权限但档案、证书、任职历史、导出记录全部保留。
+- **批量冻结先列后冻**：`POST /api/aqua/staff/freeze/preview` 先逐人列出受影响**工单**（设备员实时反查 `t_maint_work_order`/派工与主修，PLANNED/ASSIGNED/IN_PROGRESS/COMPLETED 未关闭单）与**未完成任务**（`t_staff_open_task` 登记的采样/疫病复查/捕捞等待办）；`POST /api/aqua/staff/freeze` 确认后按同一查询把影响清单落 `t_staff_freeze_impact`（随冻结单只追加）、人员置 FROZEN 实时收回全部菜单接口并写 FREEZE 收权台账；`GET /freeze/{batchId}/impacts` 可查，解冻后仍在有效期内的证书/临时授权恢复权限。
+- **四口径交叉核对**：`GET /api/aqua/staff/personnel`（列表，可按状态/岗位/仅有效过滤）、`GET /personnel/{id}`（详情：档案+有效权限+证书+任职历史+临时授权+提醒）、`GET /export`（CSV，与列表同一 loadRows）、`GET /evidence`（变更日志）与 `GET /permission-revokes`（收权台账）共用同一有效权限口径；冻结/离场/过期人员在列表与导出中都保留行、权限列为否并给收权原因。
+- 全程留证：建档、范围调整、发证/撤销、到期提醒/过期收权、授权/调岗/临时授权及到期、冻结/解冻/离场、在办任务登记销项均写 `t_staff_change_evidence`（含前后快照、幂等请求号；定时动作操作者固定为 SCHEDULER，不丢操作者）。定时任务 `aqua.staff.scan-cron` 默认每日 01:00（misfire 不补发），`POST /api/aqua/staff/scan/now` 手工触发同逻辑。
+
+验收：`mvn test -Dtest=StaffQualificationAcceptanceTest`，9 个检查点（CP0–CP8）逐段输出报告，失败即停并给出停点；覆盖四岗范围与现场头 403/放行、无审批单/无结束时间拦截、提醒幂等与过期收权台账快照、列表=详情=导出=日志交叉核对、无证调岗拒绝与旧任职 SUPERSEDED 保留、批量冻结预览与落库的工单/任务清单一致、离场收权且历史不删。
